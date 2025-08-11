@@ -214,8 +214,9 @@
     let captureExpiresAt = 0;
     let captureHint = null;
     let captureConv = null;
-    let sseLog = [];
-    const CAPTURE_MS = 12000; // 12s window after click
+    let selectedPatchObjects = [];
+    let entityModeUntil = 0;
+    const CAPTURE_MS = 30000; // extended window after click
 
     function postEventLogViaBridge(payload){
       try {
@@ -228,15 +229,16 @@
       captureExpiresAt = Date.now() + CAPTURE_MS;
       captureHint = productHint;
       captureConv = conversationId;
-      sseLog = [];
-      // Auto-flush after window
-      setTimeout(() => { flushSseCapture(); }, CAPTURE_MS + 200);
+      selectedPatchObjects = [];
+      entityModeUntil = 0;
+      setTimeout(() => { flushSseCapture(); }, CAPTURE_MS + 300);
     }
 
     function flushSseCapture(){
       if (!captureActive) return;
       captureActive = false;
-      const events = sseLog.map(line => ({ type:'sse', line }));
+      // Save exactly the patch objects user wants (array of {o:'patch', v:[...]})
+      const events = selectedPatchObjects;
       postEventLogViaBridge({
         source: 'chatgpt-extension',
         conversation_id: captureConv,
@@ -244,7 +246,8 @@
         clicked_at: new Date().toISOString(),
         events
       });
-      sseLog = [];
+      selectedPatchObjects = [];
+      entityModeUntil = 0;
     }
 
     function startCarouselCapture(){
@@ -275,7 +278,6 @@
             const reader = cloned.body.getReader();
             const decoder = new TextDecoder();
             let acc = '';
-            const startedAt = Date.now();
             (async () => {
               try {
                 while (true) {
@@ -290,9 +292,26 @@
                     if (!line) continue;
                     const dataStr = line.substring(5).trim();
                     if (!dataStr || dataStr === '[DONE]') continue;
-                    // Keep raw line for fidelity
-                    const ts = new Date().toLocaleTimeString();
-                    sseLog.push(`${ts}\t${dataStr}`);
+                    try {
+                      const parsed = JSON.parse(dataStr);
+                      const patches = Array.isArray(parsed.v) ? parsed.v : [];
+                      const hasEntity = patches.some(p => p && p.p === '/type' && p.o === 'replace' && p.v === 'product_entity');
+                      if (hasEntity) {
+                        entityModeUntil = Date.now() + 8000;
+                      }
+                      if (hasEntity || Date.now() < entityModeUntil) {
+                        const filtered = patches.filter(p => {
+                          if (!p) return false;
+                          const isType = p.p === '/type' && p.o === 'replace' && p.v === 'product_entity';
+                          const isAppendRoot = (p.p === '' || p.p === '/') && p.o === 'append';
+                          const isDataRemove = p.p === '/data' && p.o === 'remove';
+                          return isType || isAppendRoot || isDataRemove;
+                        });
+                        if (filtered.length) {
+                          selectedPatchObjects.push({ o: 'patch', v: filtered });
+                        }
+                      }
+                    } catch(_) {}
                   }
                 }
               } catch(_) {}
@@ -323,6 +342,7 @@
 
     if (document.readyState === 'loading') {
       window.addEventListener('DOMContentLoaded', startDomObserver);
+      
     } else {
       startDomObserver();
     }
