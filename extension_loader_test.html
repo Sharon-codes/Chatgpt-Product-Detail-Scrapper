@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Extension Loader Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .error { color: red; }
+        .success { color: green; }
+        .info { color: blue; }
+        pre { background: #f5f5f5; padding: 10px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Extension Loader Test</h1>
+    
+    <div id="status"></div>
+    <div id="details"></div>
+    
+    <button onclick="checkExtension()">Check Extension Status</button>
+    <button onclick="forceReload()">Force Extension Reload</button>
+    
+    <script>
+        function log(message, type = 'info') {
+            const details = document.getElementById('details');
+            const timestamp = new Date().toLocaleTimeString();
+            details.innerHTML += `<div class="${type}">[${timestamp}] ${message}</div>`;
+        }
+        
+        function updateStatus(message, type = 'info') {
+            document.getElementById('status').innerHTML = `<h3 class="${type}">${message}</h3>`;
+        }
+        
+        function checkExtension() {
+            log('=== CHECKING EXTENSION STATUS ===');
+            
+            // Basic checks
+            log(`Window location: ${window.location.href}`);
+            log(`Chrome object: ${typeof chrome !== 'undefined' ? 'Available' : 'NOT AVAILABLE'}`);
+            
+            if (typeof chrome !== 'undefined') {
+                log(`Chrome runtime: ${chrome.runtime ? 'Available' : 'NOT AVAILABLE'}`);
+                
+                if (chrome.runtime) {
+                    try {
+                        log(`Extension ID: ${chrome.runtime.id}`);
+                        log(`Extension URL: ${chrome.runtime.getURL('')}`);
+                        
+                        // Test message sending
+                        chrome.runtime.sendMessage({ type: 'PING' }, (response) => {
+                            if (chrome.runtime.lastError) {
+                                log(`Ping failed: ${chrome.runtime.lastError.message}`, 'error');
+                                updateStatus('Extension loaded but communication failed', 'error');
+                            } else {
+                                log(`Ping successful: ${JSON.stringify(response)}`, 'success');
+                                updateStatus('Extension working perfectly!', 'success');
+                            }
+                        });
+                        
+                    } catch (error) {
+                        log(`Runtime error: ${error.message}`, 'error');
+                        updateStatus('Extension has runtime errors', 'error');
+                    }
+                } else {
+                    log('Chrome runtime not available', 'error');
+                    updateStatus('Extension not properly loaded', 'error');
+                }
+            } else {
+                log('Chrome object not available - extension not loaded', 'error');
+                updateStatus('Extension not loaded at all', 'error');
+            }
+            
+            // Check for content script injection
+            log(`Document ready state: ${document.readyState}`);
+            log(`Page title: ${document.title}`);
+            
+            // Check if any scripts are loaded
+            const scripts = document.querySelectorAll('script');
+            log(`Total scripts on page: ${scripts.length}`);
+            
+            // Check for extension-related errors
+            window.addEventListener('error', (event) => {
+                log(`Page error: ${event.message}`, 'error');
+            });
+        }
+        
+        function forceReload() {
+            log('=== FORCING EXTENSION RELOAD ===');
+            log('Please follow these steps:');
+            log('1. Go to chrome://extensions/');
+            log('2. Find "ChatGPT Product Extractor"');
+            log('3. Click the refresh/reload button (🔄)');
+            log('4. Make sure it shows "Enabled"');
+            log('5. Come back here and click "Check Extension Status"');
+            
+            updateStatus('Please reload the extension manually', 'info');
+        }
+        
+        // Auto-check on load
+        window.addEventListener('load', () => {
+            log('Page loaded, checking extension in 2 seconds...');
+            setTimeout(checkExtension, 2000);
+        });
+    </script>
+</body>
+</html>

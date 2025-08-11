@@ -1,0 +1,30 @@
+@"
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node/Chrome ext
+node_modules/
+*.log
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+
+# Env/Secrets
+.env
+backend/.env.example
+
+# Docker/db
+db_data/
+*.pid
+
+# Generated event logs
+backend/static/event_logs/
+
+# Bytecode/others
+*.tmp
+"@ | Set-Content ".gitignore"

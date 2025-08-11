@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Extension Test</title>
+</head>
+<body>
+    <h1>Extension Test Page</h1>
+    <button onclick="testExtension()">Test Extension</button>
+    <div id="result"></div>
+
+    <script>
+        function testExtension() {
+            // Simulate the extension sending data
+            const testPayload = {
+                source: 'chatgpt-extension',
+                conversation_id: 'test-conversation-123',
+                product_object: {
+                    id: 'test-product-456',
+                    title: 'Test Product from Extension',
+                    offers: [{
+                        merchant_name: 'Test Merchant',
+                        price: '₹999',
+                        details: 'Free delivery on orders above ₹500'
+                    }]
+                },
+                raw_chatgpt_text: 'This is a test product from the extension'
+            };
+
+            fetch('/api/ingest', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(testPayload)
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('result').innerHTML = 
+                    '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            })
+            .catch(error => {
+                document.getElementById('result').innerHTML = 
+                    '<p style="color: red;">Error: ' + error.message + '</p>';
+            });
+        }
+    </script>
+</body>
+</html>

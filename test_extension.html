@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ChatGPT Extension Test Page</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        button { padding: 10px 20px; font-size: 16px; margin: 10px; }
+        #console { background: #f8f9fa; padding: 10px; border: 1px solid #dee2e6; border-radius: 5px; margin: 10px 0; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <h1>ChatGPT Extension Test Page</h1>
+    <p>This page tests if the Chrome extension is working via postMessage bridge.</p>
+
+    <div id="status"></div>
+
+    <button onclick="testExtension()">Test Extension Communication</button>
+    <button onclick="simulateChatGPT()">Simulate ChatGPT Product Response</button>
+    <button onclick="clearConsole()">Clear Console</button>
+
+    <div id="console"></div>
+
+    <script>
+        function log(message, type = 'info') {
+            const consoleDiv = document.getElementById('console');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.innerHTML = `<span style=\"color: #666;\">[${timestamp}]</span> ${message}`;
+            consoleDiv.appendChild(logEntry);
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        function clearConsole() {
+            document.getElementById('console').innerHTML = '';
+        }
+
+        function updateStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerHTML = `<div class=\"status ${type}\">${message}</div>`;
+        }
+
+        window.addEventListener('message', (event) => {
+            const data = event.data;
+            if (!data || typeof data !== 'object') return;
+            if (data.type === 'PONG') {
+                log('✓ Received PONG from content script', 'success');
+                updateStatus('Extension bridge is active', 'success');
+            } else if (data.type === 'QUEUED') {
+                if (data.ok) {
+                    log('✓ Payload queued by extension', 'success');
+                } else {
+                    log('✗ Extension failed to queue payload: ' + data.error, 'error');
+                }
+            }
+        });
+
+        function testExtension() {
+            log('Sending PING to content script...');
+            window.postMessage({ type: 'PING' }, '*');
+        }
+
+        function simulateChatGPT() {
+            log('Sending simulated payload to content script...');
+            const payload = {
+                source: 'chatgpt-extension-simulation',
+                raw_chatgpt_text: 'Test product: iPhone 15 Pro - ₹1,49,900 from Amazon India',
+                heuristics: {
+                    urls: [],
+                    price_text: '₹1,49,900',
+                    avg_rating: 4.5,
+                    num_ratings: 2450
+                }
+            };
+            window.postMessage({ type: 'QUEUE_INGEST', payload }, '*');
+        }
+
+        // Auto-test on load
+        window.addEventListener('load', () => {
+            log('Page loaded, sending auto PING in 1s...');
+            setTimeout(testExtension, 1000);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,163 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Captured Products</title>
+  <style>
+    :root { --muted:#666; --border:#e5e7eb; --bg:#f8fafc; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 18px; max-width:1100px; margin:auto; background:#fff; }
+    h1 { margin: 0 0 12px; }
+    .controls { margin-bottom:12px; display:flex; gap:8px; align-items:center; }
+    .controls button { padding:6px 10px; border:1px solid var(--border); background:#fff; border-radius:6px; cursor:pointer; }
+
+    .card { border:1px solid var(--border); padding:14px; border-radius:10px; margin-bottom:14px; background:#fff; }
+    .row { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+    .meta { color:var(--muted); font-size:0.9rem; }
+
+    .kv { display:grid; grid-template-columns: 180px 1fr; gap:8px 14px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:8px; margin-top:10px; }
+    .kv div.key { color:var(--muted); }
+    .kv div.val { font-weight:500; word-break:break-word; overflow-wrap:anywhere; }
+
+    details { margin-top:12px; border:1px solid var(--border); border-radius:8px; background:#fff; }
+    details > summary { cursor:pointer; padding:10px 12px; font-weight:600; list-style:none; }
+    details > summary::-webkit-details-marker { display:none; }
+    details .box { padding:10px 12px; border-top:1px solid var(--border); background:#fff; }
+
+    pre { background:#f6f8fa; padding:10px; border-radius:8px; overflow:auto; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; margin:0; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+
+    .sidebar { margin-top:24px; padding:12px; border:1px solid var(--border); border-radius:10px; background:#fff; }
+    .filelist a { display:block; padding:6px 0; text-decoration:none; color:#0366d6; word-break:break-all; }
+    .error { color:#b00020; font-size:0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Captured Products</h1>
+  <div class="controls">
+    <button id="prev" type="button">Prev</button>
+    <button id="next" type="button">Next</button>
+    <span id="pageInfo" class="meta"></span>
+    <button id="refreshLogs" type="button" style="margin-left:auto">Refresh Event Logs</button>
+  </div>
+  <div id="list"></div>
+
+  <div class="sidebar">
+    <strong>Recent Click Event Logs</strong>
+    <div id="eventLogs" class="filelist"></div>
+    <div id="eventLogsError" class="error"></div>
+  </div>
+
+  <script>
+    const LIMIT = 10;
+    let offset = 0;
+
+    function escapeHtml(s){ return s ? s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) : ''; }
+    function formatMultiline(s){
+      if (!s) return '';
+      try { s = s.replace(/\\n/g, '\n'); } catch(_) {}
+      return escapeHtml(s);
+    }
+    function fmtBool(b){ return b === true ? 'Yes' : (b === false ? 'No' : ''); }
+
+    async function load(){
+      const mount = document.getElementById('list');
+      mount.innerHTML = 'Loading...';
+      const res = await fetch(`/api/products?limit=${LIMIT}&offset=${offset}`, { cache: 'no-store' });
+      const j = await res.json();
+      mount.innerHTML = '';
+      document.getElementById('pageInfo').innerText = `Showing ${j.products.length ? offset+1 : 0} - ${offset + j.count}`;
+      if(!j.products.length) {
+        mount.innerHTML = '<i>No products</i>';
+        return;
+      }
+      for(const p of j.products){
+        const heur = (p.extras && p.extras.heuristics) ? p.extras.heuristics : {};
+        const priceText = p.price_text || heur.price_text || '';
+        const priceNum = p.price_numeric ?? null;
+        const merchant = p.merchant_default || heur.merchant_default || '';
+        const avgRating = p.avg_rating ?? heur.avg_rating ?? '';
+        const numRatings = p.num_ratings ?? heur.num_ratings ?? '';
+        const freeDelivery = (p.free_delivery !== null && p.free_delivery !== undefined) ? p.free_delivery : (heur.free_delivery ?? null);
+        const minSpend = p.min_spend_for_free_delivery ?? heur.min_spend_for_free_delivery ?? '';
+
+        const el = document.createElement('div');
+        el.className = 'card';
+        el.innerHTML = `
+          <div class="row">
+            <div>
+              <div style="font-size:1.05rem;font-weight:700;">${escapeHtml(p.title || '(no title)')}</div>
+              <div class="meta">source: ${escapeHtml(p.source)} — captured: ${new Date(p.captured_at).toLocaleString()}</div>
+              ${p.conversation_id ? `<div class="meta">conversation: ${escapeHtml(p.conversation_id)}</div>` : ''}
+            </div>
+            <div style="text-align:right; min-width:220px;">
+              <div style="font-size:1.1rem;font-weight:700;">${escapeHtml(priceText)} ${priceNum ? `<span class="meta">(${priceNum})</span>` : ''}</div>
+              <div class="meta">${escapeHtml(merchant)}</div>
+            </div>
+          </div>
+
+          <div class="kv">
+            <div class="key">Price</div><div class="val">${escapeHtml(priceText)}${priceNum ? ` — ${priceNum}` : ''}</div>
+            <div class="key">Merchant</div><div class="val">${escapeHtml(merchant)}</div>
+            <div class="key">Avg rating</div><div class="val">${avgRating !== '' ? escapeHtml(String(avgRating)) : ''}</div>
+            <div class="key"># ratings</div><div class="val">${numRatings !== '' ? escapeHtml(String(numRatings)) : ''}</div>
+            <div class="key">Free delivery</div><div class="val">${fmtBool(freeDelivery)}</div>
+            <div class="key">Min spend</div><div class="val">${minSpend !== '' ? escapeHtml(String(minSpend)) : ''}</div>
+          </div>
+
+          <details>
+            <summary>Raw ChatGPT text</summary>
+            <div class="box"><pre><code>${formatMultiline(p.raw_chatgpt_text || '')}</code></pre></div>
+          </details>
+
+          <details>
+            <summary>Product object</summary>
+            <div class="box"><pre><code>${escapeHtml(JSON.stringify(p.product_object || {}, null, 2))}</code></pre></div>
+          </details>
+
+          <details>
+            <summary>Extras</summary>
+            <div class="box"><pre><code>${escapeHtml(JSON.stringify(p.extras || {}, null, 2))}</code></pre></div>
+          </details>
+        `;
+        mount.appendChild(el);
+      }
+      loadLogs();
+    }
+
+    async function loadLogs(){
+      const cont = document.getElementById('eventLogs');
+      const err = document.getElementById('eventLogsError');
+      cont.innerHTML = 'Loading logs...';
+      err.textContent = '';
+      try {
+        const res = await fetch('/api/event-log/list?t=' + Date.now(), { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const j = await res.json();
+        cont.innerHTML = '';
+        if (!j.files || !j.files.length) { cont.innerHTML = '<i>No click logs yet</i>'; return; }
+        for(const f of j.files){
+          const a = document.createElement('a');
+          a.href = f.url + '?t=' + Date.now();
+          a.target = '_blank';
+          a.textContent = `${f.name} (${Math.ceil(f.size/1024)} KB)`;
+          cont.appendChild(a);
+        }
+      } catch (e) {
+        cont.innerHTML = '';
+        err.textContent = 'Failed to load logs. ' + (e && e.message ? e.message : '');
+        console.error('loadLogs error', e);
+      }
+    }
+
+    document.getElementById('next').addEventListener('click', ()=>{ offset += LIMIT; load(); });
+    document.getElementById('prev').addEventListener('click', ()=>{ offset = Math.max(0, offset - LIMIT); load(); });
+    document.getElementById('refreshLogs').addEventListener('click', loadLogs);
+
+    load();
+  </script>
+</body>
+</html>
+
+
+
+
