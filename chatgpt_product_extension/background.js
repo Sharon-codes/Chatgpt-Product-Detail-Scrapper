@@ -2,8 +2,8 @@
 
 console.log("Service worker active");
 
-const INGEST_URL = 'http://localhost:8000/api/ingest';
-const EVENT_LOG_URL = 'http://localhost:8000/api/event-log';
+const INGEST_URL = "http://localhost:8000/api/ingest";
+EVENT_LOG_URL = "http://localhost:8000/api/event-log"
 
 const QUEUE_KEY = 'ingest_queue';
 const MAX_RETRIES = 3;
@@ -66,10 +66,20 @@ async function saveEventLog(payload) {
   }
 }
 
+function payloadHash(p){
+  try { return btoa(unescape(encodeURIComponent((p.conversation_id||'')+'|'+(p.raw_chatgpt_text||'').trim()))).slice(0,120); } catch(_) { return String(Date.now()); }
+}
+
 async function queueIngest(payload) {
   try {
     const queue = await getQueue();
-    queue.push({ payload, retries: 0, timestamp: Date.now() });
+    const ph = payloadHash(payload);
+    const exists = queue.some(q => q.hash === ph);
+    if (exists) {
+      console.log('Duplicate payload suppressed (hash match)');
+      return;
+    }
+    queue.push({ payload, retries: 0, timestamp: Date.now(), hash: ph });
     await saveQueue(queue);
     console.log("Payload queued, queue length:", queue.length);
     processQueue();

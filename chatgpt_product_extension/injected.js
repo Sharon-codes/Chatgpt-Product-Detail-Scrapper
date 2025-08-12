@@ -294,7 +294,15 @@
                     if (!dataStr || dataStr === '[DONE]') continue;
                     try {
                       const parsed = JSON.parse(dataStr);
-                      const patches = Array.isArray(parsed.v) ? parsed.v : [];
+                                const patches = Array.isArray(parsed.v) ? parsed.v : [];
+                                // Capture direct entity object if present
+                                if (parsed && parsed.v && !Array.isArray(parsed.v) && typeof parsed.v === 'object') {
+                                  const maybeEntity = parsed.v;
+                                  if (maybeEntity && maybeEntity.type === 'product_entity') {
+                                    selectedPatchObjects.push({ v: maybeEntity });
+                                    entityModeUntil = Date.now() + 8000;
+                                  }
+                                }
                       const hasEntity = patches.some(p => p && p.p === '/type' && p.o === 'replace' && p.v === 'product_entity');
                       if (hasEntity) {
                         entityModeUntil = Date.now() + 8000;
