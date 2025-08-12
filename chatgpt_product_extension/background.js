@@ -2,8 +2,9 @@
 
 console.log("Service worker active");
 
-const INGEST_URL = 'http://localhost:8000/api/ingest';
-const EVENT_LOG_URL = 'http://localhost:8000/api/event-log';
+const INGEST_URL = "https://aunpbdtpdp.us-west-2.awsapprunner.com/api/ingest";
+const EVENT_LOG_URL =
+  "https://aunpbdtpdp.us-west-2.awsapprunner.com/api/event-log";
 
 const QUEUE_KEY = 'ingest_queue';
 const MAX_RETRIES = 3;

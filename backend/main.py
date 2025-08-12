@@ -12,19 +12,22 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from datetime import datetime
 import re
 
-load_dotenv()
+# Import configuration
+from config import (
+    ENVIRONMENT, DATABASE_URL, ALLOWED_ORIGINS, 
+    DB_SCHEMA, DB_TABLE, FULL_TABLE_NAME,
+    get_database_info, is_production
+)
 
-# Database configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/chatgpt_products")
+load_dotenv()
 
 app = FastAPI(title="ChatGPT Product Ingest API")
 
-# allow frontend + extension to call (dev mode)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # restrict in production
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -54,15 +57,42 @@ class EventLogPayload(BaseModel):
     events: List[Dict[str, Any]]
 
 async def wait_for_db(uri: str, retries: int = 12, delay: float = 2.0):
-    """Wait for Postgres to be ready and return a pool."""
+    """Wait for Aurora PostgreSQL to be ready and return a pool with proper SSL."""
     last_exc = None
-    for _ in range(retries):
+    
+    # Parse the original URI and add SSL requirements for Aurora if not present
+    if "sslmode=" not in uri:
+        separator = "&" if "?" in uri else "?"
+        uri = f"{uri}{separator}sslmode=require"
+    
+    for attempt in range(retries):
         try:
-            pool = await asyncpg.create_pool(uri, min_size=1, max_size=10)
+            pool = await asyncpg.create_pool(
+                uri, 
+                min_size=2, 
+                max_size=15,  # Increased for Aurora
+                command_timeout=60,  # 1 minute
+                server_settings={
+                    'application_name': 'chatgpt_product_scraper_aurora',
+                    'statement_timeout': '120000',  # 2 minutes
+                    'idle_in_transaction_session_timeout': '300000'  # 5 minutes
+                }
+            )
+            
+            # Test the connection
+            async with pool.acquire() as conn:
+                await conn.execute("SELECT 1")
+            
+            print(f"✅ Aurora connection established successfully on attempt {attempt + 1}")
             return pool
+            
         except Exception as e:
             last_exc = e
-            await asyncio.sleep(delay)
+            print(f"Database connection attempt {attempt + 1}/{retries} failed: {e}")
+            if attempt < retries - 1:
+                await asyncio.sleep(delay)
+    
+    print(f"❌ Failed to connect to Aurora after {retries} attempts")
     raise last_exc
 
 @app.on_event("startup")
@@ -104,8 +134,9 @@ async def ingest(payload: IngestPayload):
         product_id = product_object.get("id") or product_object.get("product_id")
         title = product_object.get("title") or product_object.get("product_name")
 
-    query = """
-    INSERT INTO products
+    # Dynamic table reference based on environment
+    query = f"""
+    INSERT INTO {FULL_TABLE_NAME}
     (source, conversation_id, product_id, title, merchant_default, price_text, price_numeric, delivery_by, free_delivery, min_spend_for_free_delivery, avg_rating, num_ratings, geotags, product_object, raw_chatgpt_text, extras)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
     RETURNING id
@@ -189,12 +220,30 @@ async def list_event_logs():
         pass
     return {"ok": True, "files": files}
 
-# -------------------------
-# STATIC FRONTEND
-# -------------------------
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for App Runner"""
+    try:
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                await conn.execute("SELECT 1")
+            return {
+                "status": "healthy", 
+                "database": "connected", 
+                **get_database_info()
+            }
+        return {"status": "unhealthy", "database": "disconnected", "environment": ENVIRONMENT}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e), "environment": ENVIRONMENT}
 
-# Mount static frontend at root AFTER APIs
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+@app.get("/")
+async def root():
+    """Root endpoint for App Runner health checks"""
+    return {
+        "message": "ChatGPT Product Scraper API", 
+        "status": "running", 
+        **get_database_info()
+    }
 
 @app.get("/test")
 async def test_page():
@@ -342,3 +391,10 @@ async def test_page():
 </html>
     """
     return HTMLResponse(content=html_content)
+
+# -------------------------
+# STATIC FRONTEND
+# -------------------------
+
+# Mount static frontend at root AFTER ALL API routes are defined
+app.mount("/", StaticFiles(directory="static", html=True), name="static")

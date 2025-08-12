@@ -28,3 +28,5 @@ backend/static/event_logs/
 # Bytecode/others
 *.tmp
 "@ | Set-Content ".gitignore"
+
+**/deploy/*
