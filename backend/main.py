@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import hashlib
 from typing import Optional, Any, Dict, List
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -134,11 +135,18 @@ async def ingest(payload: IngestPayload):
         product_id = product_object.get("id") or product_object.get("product_id")
         title = product_object.get("title") or product_object.get("product_name")
 
-    # Dynamic table reference based on environment
+    # Compute idempotency hash to prevent duplicates
+    conv_id = (payload.conversation_id or "").strip()
+    canonical_text = (payload.raw_chatgpt_text or "").strip()
+    content_hash_input = f"{conv_id}|{canonical_text}".encode("utf-8", errors="ignore")
+    content_hash = hashlib.sha256(content_hash_input).hexdigest()
+
+    # Dynamic table reference based on environment, include content_hash and ensure ON CONFLICT DO NOTHING
     query = f"""
     INSERT INTO {FULL_TABLE_NAME}
-    (source, conversation_id, product_id, title, merchant_default, price_text, price_numeric, delivery_by, free_delivery, min_spend_for_free_delivery, avg_rating, num_ratings, geotags, product_object, raw_chatgpt_text, extras)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+    (source, conversation_id, product_id, title, merchant_default, price_text, price_numeric, delivery_by, free_delivery, min_spend_for_free_delivery, avg_rating, num_ratings, geotags, product_object, raw_chatgpt_text, extras, content_hash)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+    ON CONFLICT (conversation_id, content_hash) DO NOTHING
     RETURNING id
     """
     
@@ -149,7 +157,7 @@ async def ingest(payload: IngestPayload):
     
     values = [
         payload.source,
-        payload.conversation_id,
+        conv_id,
         product_id,
         title,
         payload.merchant_default,
@@ -163,13 +171,17 @@ async def ingest(payload: IngestPayload):
         geotags_json,
         product_object_json,
         raw_text,
-        extras_json
+        extras_json,
+        content_hash
     ]
 
     async with db_pool.acquire() as conn:
         try:
             row = await conn.fetchrow(query, *values)
-            return {"ok": True, "inserted_id": row["id"]}
+            if row and "id" in row:
+                return {"ok": True, "inserted_id": row["id"], "dedup": False}
+            # Duplicate (idempotent no-op)
+            return {"ok": True, "dedup": True}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -201,9 +213,21 @@ async def save_event_log(payload: EventLogPayload):
     except Exception as e:
         raise HTTPException(500, f"Failed to write event log: {e}")
 
+    # Try to extract and persist product_entity objects from events
+    try:
+        saved_entities = await persist_product_entities_from_events(
+            events=payload.events or [],
+            conversation_id=payload.conversation_id or "",
+            source=payload.source or "chatgpt-extension",
+            related_filename=fname,
+        )
+    except Exception as e:
+        # Don't fail the logging endpoint if persistence fails
+        saved_entities = {"error": str(e)}
+
     # Return public URL under static
     url_path = f"/event_logs/{fname}"
-    return {"ok": True, "file": url_path, "filename": fname}
+    return {"ok": True, "file": url_path, "filename": fname, "entities": saved_entities}
 
 @app.get("/api/event-log/list")
 async def list_event_logs():
@@ -398,3 +422,130 @@ async def test_page():
 
 # Mount static frontend at root AFTER ALL API routes are defined
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+# -------------------------
+# Helper functions and additional APIs
+# -------------------------
+
+def _safe_float_from_text(text: Optional[str]) -> Optional[float]:
+    if not text:
+        return None
+    try:
+        # Keep digits and one dot
+        cleaned = "".join(ch for ch in str(text) if (ch.isdigit() or ch == "."))
+        return float(cleaned) if cleaned else None
+    except Exception:
+        return None
+
+async def persist_product_entities_from_events(events: List[Dict[str, Any]], conversation_id: str, source: str, related_filename: str):
+    global db_pool
+    if db_pool is None:
+        return {"saved": 0}
+
+    def extract_entities() -> List[Dict[str, Any]]:
+        entities: List[Dict[str, Any]] = []
+        for ev in events:
+            # Case 1: direct entity object under key 'v'
+            if isinstance(ev, dict) and isinstance(ev.get("v"), dict):
+                v = ev["v"]
+                if v.get("type") == "product_entity":
+                    entities.append(v)
+                    continue
+            # Case 2: patch list that appends root object and sets type
+            if isinstance(ev, dict) and ev.get("o") == "patch" and isinstance(ev.get("v"), list):
+                obj: Dict[str, Any] = {}
+                has_type = False
+                for p in ev["v"]:
+                    if not isinstance(p, dict):
+                        continue
+                    path = p.get("p")
+                    op = p.get("o")
+                    val = p.get("v")
+                    if path in ("", "/") and op == "append" and isinstance(val, dict):
+                        obj.update(val)
+                    if path == "/type" and op == "replace" and val == "product_entity":
+                        obj["type"] = "product_entity"
+                        has_type = True
+                if has_type and obj:
+                    entities.append(obj)
+        return entities
+
+    entities = extract_entities()
+    if not entities:
+        return {"saved": 0}
+
+    saved = 0
+    async with db_pool.acquire() as conn:
+        for ent in entities:
+            title = (
+                (ent.get("product") or {}).get("title")
+                or (ent.get("prompt_text") or "").split("\n")[0].strip()
+                or "(product)"
+            )
+            product_id = (ent.get("product") or {}).get("id")
+            merchant_default = ent.get("merchants") or (ent.get("product") or {}).get("provider")
+            price_text = ent.get("price") or (ent.get("product") or {}).get("price")
+            price_numeric = _safe_float_from_text(price_text)
+            avg_rating = ent.get("rating")
+            num_ratings = ent.get("num_reviews") or ent.get("reviews")
+            raw_text = ent.get("prompt_text") or ent.get("alt") or ""
+
+            extras = {"from_event_log": True, "event_log_filename": related_filename}
+
+            # Compute hash for idempotency on entity content
+            ent_json = json.dumps(ent, sort_keys=True, ensure_ascii=False)
+            content_hash = hashlib.sha256(f"{conversation_id}|entity|{ent_json}".encode("utf-8")).hexdigest()
+
+            query = f"""
+            INSERT INTO {FULL_TABLE_NAME}
+            (source, conversation_id, product_id, title, merchant_default, price_text, price_numeric, geotags, product_object, raw_chatgpt_text, extras, content_hash)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+            ON CONFLICT (conversation_id, content_hash) DO NOTHING
+            RETURNING id
+            """
+
+            geotags_json = None
+            product_object_json = ent_json
+            extras_json = json.dumps(extras)
+
+            row = await conn.fetchrow(
+                query,
+                source,
+                conversation_id,
+                product_id,
+                title,
+                merchant_default,
+                price_text,
+                price_numeric,
+                geotags_json,
+                product_object_json,
+                raw_text,
+                extras_json,
+                content_hash,
+            )
+            if row and "id" in row:
+                saved += 1
+    return {"saved": saved}
+
+
+@app.get("/api/products")
+async def list_products(limit: int = 10, offset: int = 0):
+    global db_pool
+    if db_pool is None:
+        raise HTTPException(503, "DB not ready")
+    async with db_pool.acquire() as conn:
+        count_row = await conn.fetchrow(f"SELECT COUNT(1) AS c FROM {FULL_TABLE_NAME}")
+        rows = await conn.fetch(
+            f"""
+            SELECT id, captured_at, source, conversation_id, product_id, title, merchant_default,
+                   price_text, price_numeric, avg_rating, num_ratings, geotags, product_object,
+                   raw_chatgpt_text, extras
+            FROM {FULL_TABLE_NAME}
+            ORDER BY id DESC
+            LIMIT $1 OFFSET $2
+            """,
+            limit,
+            offset,
+        )
+        # asyncpg returns dict-like rows serializable by FastAPI
+        return {"ok": True, "count": count_row["c"], "products": [dict(r) for r in rows]}
